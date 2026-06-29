@@ -1,0 +1,167 @@
+diff --git a/include/n2n_typedefs.h b/include/n2n_typedefs.h
+--- a/include/n2n_typedefs.h
++++ b/include/n2n_typedefs.h
+@@ -858,6 +858,8 @@ typedef struct n2n_sn {
+     n2n_auth_t                             auth;
+     uint32_t                               dynamic_key_time;  /* UTC time of last dynamic key generation (second accuracy) */
+     uint8_t                                override_spoofing_protection; /* set if overriding MAC/IP spoofing protection (cli option '-M') */
++    uint8_t                                gon2n_fast_reconnect; /* allow stale same-IP simple-id registrations to replace old edge records */
++    uint16_t                               gon2n_fast_reconnect_after; /* seconds old edge record must be quiet before replacement */
+     n2n_resolve_parameter_t                *resolve_parameter;/*Pointer to name resolver's parameter block */
+     uint64_t                               mgmt_password_hash;/* contains hash of managament port password */
+ } n2n_sn_t;
+diff --git a/src/sn_utils.c b/src/sn_utils.c
+--- a/src/sn_utils.c
++++ b/src/sn_utils.c
+@@ -750,6 +750,7 @@ int sn_init_defaults (n2n_sn_t *sss) {
+     sss->lport = N2N_SN_LPORT_DEFAULT;
+     sss->mport = N2N_SN_MGMT_PORT;
+     sss->sock = -1;
+     sss->mgmt_sock = -1;
++    sss->gon2n_fast_reconnect_after = 3;
+     sss->min_auto_ip_net.net_addr = inet_addr(N2N_SN_MIN_AUTO_IP_NET_DEFAULT);
+     sss->min_auto_ip_net.net_addr = ntohl(sss->min_auto_ip_net.net_addr);
+     sss->min_auto_ip_net.net_bitlen = N2N_SN_AUTO_IP_NET_BIT_DEFAULT;
+@@ -910,6 +911,23 @@ static uint16_t reg_lifetime (n2n_sn_t *sss) {
+ }
+ 
+ 
++static int sock_same_address (const n2n_sock_t *a, const n2n_sock_t *b) {
++
++    if(a->family != b->family) {
++        return 0;
++    }
++
++    switch(a->family) {
++        case AF_INET:
++            return memcmp(a->addr.v4, b->addr.v4, IPV4_SIZE) == 0;
++        case AF_INET6:
++            return memcmp(a->addr.v6, b->addr.v6, IPV6_SIZE) == 0;
++        default:
++            return 0;
++    }
++}
++
++
+ /** Verifies authentication tokens from known edges.
+  *
+  *  It is called by update_edge and during UNREGISTER_SUPER handling
+@@ -1131,8 +1149,44 @@ static int update_edge (n2n_sn_t *sss,
+                 ret = update_edge_no_change;
+             }
+         } else {
+-            traceEvent(TRACE_INFO, "authentication failed");
+-            ret = update_edge_auth_fail;
++            int same_tap_ip = (scan->dev_addr.net_addr == reg->dev_addr.net_addr)
++                           && (scan->dev_addr.net_bitlen == reg->dev_addr.net_bitlen)
++                           && (reg->dev_addr.net_addr != 0);
++            int same_remote_addr = sock_same_address(sender_sock, &(scan->sock));
++            int stale_record = (now >= scan->last_seen)
++                            && ((now - scan->last_seen) >= sss->gon2n_fast_reconnect_after);
++
++            if(sss->gon2n_fast_reconnect
++               && (reg->auth.scheme == n2n_auth_simple_id)
++               && (scan->auth.scheme == n2n_auth_simple_id)
++               && same_tap_ip
++               && (same_remote_addr || stale_record)) {
++                HASH_DEL(comm->edges, scan);
++                memcpy(&(scan->mac_addr), reg->edgeMac, sizeof(n2n_mac_t));
++                HASH_ADD_PEER(comm->edges, scan);
++                scan->dev_addr.net_addr = reg->dev_addr.net_addr;
++                scan->dev_addr.net_bitlen = reg->dev_addr.net_bitlen;
++                memcpy((char*)scan->dev_desc, reg->dev_desc, N2N_DESC_SIZE);
++                memcpy(&(scan->sock), sender_sock, sizeof(n2n_sock_t));
++                scan->socket_fd = socket_fd;
++                scan->last_cookie = reg->cookie;
++                scan->last_valid_time_stamp = initial_time_stamp();
++                if(cmn->flags & N2N_FLAGS_SOCKET)
++                    memcpy(&scan->preferred_sock, &reg->sock, sizeof(n2n_sock_t));
++                else
++                    scan->preferred_sock.family = AF_INVALID;
++                memcpy(&(scan->auth), &(reg->auth), sizeof(n2n_auth_t));
++                if(answer_auth)
++                    memset(answer_auth, 0, sizeof(n2n_auth_t));
++
++                traceEvent(TRACE_INFO, "GoN2N fast reconnect replaced stale edge %s ==> %s",
++                           macaddr_str(mac_buf, reg->edgeMac),
++                           sock_to_cstr(sockbuf, sender_sock));
++                ret = update_edge_sock_change;
++            } else {
++                traceEvent(TRACE_INFO, "authentication failed");
++                ret = update_edge_auth_fail;
++            }
+         }
+     }
+ 
+diff --git a/src/supernode.c b/src/supernode.c
+--- a/src/supernode.c
++++ b/src/supernode.c
+@@ -24,6 +24,8 @@
+ #include "header_encryption.h"
+ 
+ #define HASH_FIND_COMMUNITY(head, name, out) HASH_FIND_STR(head, name, out)
++#define OPT_GON2N_FAST_RECONNECT        1000
++#define OPT_GON2N_FAST_RECONNECT_AFTER  1001
+ 
+ static n2n_sn_t sss_node;
+ 
+@@ -123,6 +125,12 @@ static void help (int level) {
+ #endif
+         printf(" -M                | disable MAC and IP address spoofing protection for all\n"
+                "                   | non-username-password-authenticating communities\n");
++        printf(" --gon2n-fast-reconnect\n"
++               "                   | allow stale same-IP GoN2N simple-id registrations to replace\n"
++               "                   | old edge records without disabling global spoofing protection\n");
++        printf(" --gon2n-fast-reconnect-after <sec>\n"
++               "                   | seconds an old edge must be quiet before fast replacement\n"
++               "                   | is allowed (default: 3)\n");
+         printf(" -V <version text> | sends a custom supernode version string of max 19 letters \n"
+                "                   | length to edges, visible in their management port output\n");
+         printf ("\n");
+@@ -304,6 +312,17 @@ static int setOption (int optkey, char *_optarg, n2n_sn_t *sss) {
+             sss->override_spoofing_protection = 1;
+             break;
+ 
++        case OPT_GON2N_FAST_RECONNECT:
++            sss->gon2n_fast_reconnect = 1;
++            break;
++
++        case OPT_GON2N_FAST_RECONNECT_AFTER: {
++            int seconds = atoi(_optarg);
++            sss->gon2n_fast_reconnect = 1;
++            sss->gon2n_fast_reconnect_after = (seconds < 0) ? 0 : (uint16_t)seconds;
++            break;
++        }
++
+         case 'V': /* version text */
+             strncpy(sss->version, _optarg, sizeof(n2n_version_t));
+             sss->version[sizeof(n2n_version_t) - 1] = '\0';
+@@ -356,6 +375,8 @@ static const struct option long_options[] = {
+     {"verbose",             no_argument,       NULL, 'v'},
+     {"help",                no_argument,       NULL, '@'}, /* special character '@' to identify long help case */
+     {"management-password", required_argument, NULL, ']' }, /*                  ']'             management port password */
++    {"gon2n-fast-reconnect", no_argument,      NULL, OPT_GON2N_FAST_RECONNECT },
++    {"gon2n-fast-reconnect-after", required_argument, NULL, OPT_GON2N_FAST_RECONNECT_AFTER },
+     {NULL,                  0,                 NULL, 0}
+ };
+ 
+@@ -364,7 +385,7 @@ static const struct option long_options[] = {
+ /* read command line options */
+ static int loadFromCLI (int argc, char * const argv[], n2n_sn_t *sss) {
+ 
+-    u_char c;
++    int c;
+ 
+     while((c = getopt_long(argc, argv,
+                            "p:l:t:a:c:F:vhMV:"
+@@ -598,6 +619,10 @@ int main (int argc, char * const argv[]) {
+         traceEvent(TRACE_WARNING, "disabled MAC and IP address spoofing protection; FOR TESTING ONLY, usage of user-password authentication (-I, -J, -P) recommended instead!");
+     }
+ 
++    if(sss_node.gon2n_fast_reconnect) {
++        traceEvent(TRACE_WARNING, "enabled GoN2N fast reconnect; stale same-IP simple-id edge records can be replaced after %u seconds", sss_node.gon2n_fast_reconnect_after);
++    }
++
+     calculate_shared_secrets(&sss_node);
+ 
+     traceEvent(TRACE_DEBUG, "traceLevel is %d", getTraceLevel());

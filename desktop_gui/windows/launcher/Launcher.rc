@@ -1,0 +1,5 @@
+#pragma code_page(65001)
+#include "../runner/resource.h"
+#include "winres.h"
+
+IDI_APP_ICON ICON "../runner/resources/app_icon.ico"
