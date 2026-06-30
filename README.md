@@ -40,11 +40,11 @@ GoN2N 客户端需要连接到 n2n `supernode`。你可以使用自己编译的 
 
 假设已经得到 `supernode` 可执行文件，可以放到：
 
-GoN2N patched n2n release artifact name: `n2nR-linux-amd64`.
+GoN2N patched n2n release artifact name: `n2nR-server-linux-amd64`.
 
 ```bash
 ./scripts/build-n2nr-linux-amd64.sh
-sudo install -m 755 dist/n2nR-linux-amd64 /usr/local/bin/n2nR
+sudo install -m 755 dist/n2nR-server-linux-amd64 /usr/local/bin/n2nR
 ```
 
 一次构建 n2nR 的 Linux/Windows 多架构产物：
@@ -205,7 +205,7 @@ sudo systemctl stop n2n-supernode
 替换二进制文件：
 
 ```bash
-sudo install -m 755 dist/n2nR-linux-amd64 /usr/local/bin/n2nR
+sudo install -m 755 dist/n2nR-server-linux-amd64 /usr/local/bin/n2nR
 ```
 
 重新启动：

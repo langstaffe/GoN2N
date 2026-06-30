@@ -34,31 +34,31 @@ case "$TARGET" in
 	linux-amd64)
 		HOST=""
 		: "${CC:=gcc}"
-		: "${OUTPUT_NAME:=n2nR-linux-amd64}"
+		: "${OUTPUT_NAME:=n2nR-server-linux-amd64}"
 		SUPERNODE_BIN="supernode"
 		;;
 	linux-arm64)
 		HOST="aarch64-linux-gnu"
 		: "${CC:=aarch64-linux-gnu-gcc}"
-		: "${OUTPUT_NAME:=n2nR-linux-arm64}"
+		: "${OUTPUT_NAME:=n2nR-server-linux-arm64}"
 		SUPERNODE_BIN="supernode"
 		;;
 	linux-armv7|linux-armhf)
 		HOST="arm-linux-gnueabihf"
 		: "${CC:=arm-linux-gnueabihf-gcc}"
-		: "${OUTPUT_NAME:=n2nR-linux-armv7}"
+		: "${OUTPUT_NAME:=n2nR-server-linux-armv7}"
 		SUPERNODE_BIN="supernode"
 		;;
 	linux-386|linux-i386)
 		HOST="i686-linux-gnu"
 		: "${CC:=i686-linux-gnu-gcc}"
-		: "${OUTPUT_NAME:=n2nR-linux-386}"
+		: "${OUTPUT_NAME:=n2nR-server-linux-386}"
 		SUPERNODE_BIN="supernode"
 		;;
 	windows-amd64|windows-x64)
 		HOST="x86_64-w64-mingw32"
 		: "${CC:=x86_64-w64-mingw32-gcc}"
-		: "${OUTPUT_NAME:=n2nR-windows-x64.exe}"
+		: "${OUTPUT_NAME:=n2nR-server-windows-x64.exe}"
 		SUPERNODE_BIN="src/supernode.exe"
 		MAKE_TARGET_ARGS="CONFIG_TARGET=mingw"
 		COMPAT_OPTIONS="-fpermissive"
@@ -67,7 +67,7 @@ case "$TARGET" in
 	windows-386|windows-i386|windows-x86)
 		HOST="i686-w64-mingw32"
 		: "${CC:=i686-w64-mingw32-gcc}"
-		: "${OUTPUT_NAME:=n2nR-windows-x86.exe}"
+		: "${OUTPUT_NAME:=n2nR-server-windows-x86.exe}"
 		SUPERNODE_BIN="src/supernode.exe"
 		MAKE_TARGET_ARGS="CONFIG_TARGET=mingw"
 		COMPAT_OPTIONS="-fpermissive"
