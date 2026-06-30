@@ -115,6 +115,9 @@ class _ConnectionPageState extends State<ConnectionPage> {
   static const _shareUriPrefix = 'gon2n:';
   static const _defaultAddressSubnet = '10.239.180.0/24';
   static const _diagnosticPort = 51875;
+  static const _speedTestBytes = 4 * 1024 * 1024;
+  static const _diagnosticResultTtl = Duration(seconds: 30);
+  static const _maxReconnectDelay = Duration(seconds: 30);
 
   final _formKey = GlobalKey<FormState>();
   final _server = TextEditingController();
@@ -129,8 +132,8 @@ class _ConnectionPageState extends State<ConnectionPage> {
   final _logText = TextEditingController();
   final _logs = <String>[];
   bool _compactLogs = true;
-  double _splitFraction = 5 / 9;
-  double _rightPanelFraction = 0.30;
+  double _splitFraction = 55 / 100;
+  double _rightPanelFraction = 0.50;
   bool _tapReadyLogged = false;
   bool _supernodeReadyLogged = false;
 
@@ -140,10 +143,16 @@ class _ConnectionPageState extends State<ConnectionPage> {
   bool _obscureKey = true;
   bool _obscureMemberServiceKey = true;
   bool _advancedSettingsExpanded = false;
+  bool _exitConfirmationOpen = false;
+  bool _exitInProgress = false;
+  bool _manualDisconnectRequested = false;
   bool _forceRelay = true;
   bool _preferTapMetric = true;
+  bool _verboseEdgeLogs = false;
   String? _deviceId;
   Timer? _heartbeatTimer;
+  Timer? _reconnectTimer;
+  int _reconnectAttempts = 0;
   bool _heartbeatInFlight = false;
   int _heartbeatFailureCount = 0;
   bool _heartbeatUnavailableLogged = false;
@@ -152,7 +161,11 @@ class _ConnectionPageState extends State<ConnectionPage> {
   bool _diagnosticStarting = false;
   AppLifecycleListener? _lifecycleListener;
   List<_OnlineMember> _members = const [];
+  final _connectionModes = <String, String>{};
   final _checkResults = <String, _NetworkCheckResult>{};
+  final _speedTestResults = <String, _SpeedTestResult>{};
+  final _checkResultTimers = <String, Timer>{};
+  final _speedTestResultTimers = <String, Timer>{};
   bool _checkingNetwork = false;
   bool get _edgeRunning => _edge != null;
   bool get _connected => _status == ConnectionStatus.connected;
@@ -208,6 +221,13 @@ class _ConnectionPageState extends State<ConnectionPage> {
   void dispose() {
     _edge?.kill();
     _heartbeatTimer?.cancel();
+    _reconnectTimer?.cancel();
+    for (final timer in _checkResultTimers.values) {
+      timer.cancel();
+    }
+    for (final timer in _speedTestResultTimers.values) {
+      timer.cancel();
+    }
     _lifecycleListener?.dispose();
     _stopDiagnosticServer();
     unawaited(_restoreTapMetric());
@@ -260,6 +280,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
         _edgePath.text = _resolveSavedEdgePath(value['edgePath'] as String?);
         _forceRelay = value['forceRelay'] as bool? ?? true;
         _preferTapMetric = value['preferTapMetric'] as bool? ?? true;
+        _verboseEdgeLogs = value['verboseEdgeLogs'] as bool? ?? false;
         _deviceId = value['deviceId'] as String? ?? _generateDeviceId();
       });
     } catch (error) {
@@ -283,6 +304,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
             'edgePath': _edgePath.text.trim(),
             'forceRelay': _forceRelay,
             'preferTapMetric': _preferTapMetric,
+            'verboseEdgeLogs': _verboseEdgeLogs,
             'deviceId': _deviceId ??= _generateDeviceId(),
             'darkMode': darkMode ?? widget.darkMode,
           })}\n',
@@ -299,7 +321,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
     setState(() {
       _logs.add(
           '[${DateTime.now().toLocal().toIso8601String().substring(11, 19)}] $line');
-      if (_logs.length > 500) _logs.removeAt(0);
+      if (_logs.length > 1000) _logs.removeAt(0);
       _syncLogText();
     });
   }
@@ -307,6 +329,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
   void _handleEdgeLog(String line) {
     _appendLog(line);
     final lower = line.toLowerCase();
+    _updateConnectionModeFromEdgeLog(line);
     if (!_tapReadyLogged &&
         (lower.contains('open device') ||
             lower.contains('created local tap device ip'))) {
@@ -326,15 +349,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
         _supernodeReadyLogged = true;
         _appendLog('已连接到 supernode');
       }
-      if (mounted &&
-          _edgeRunning &&
-          _status != ConnectionStatus.connected &&
-          _status != ConnectionStatus.error) {
-        setState(() => _status = ConnectionStatus.connected);
-        unawaited(_applyTapMetricPreference());
-        unawaited(_startDiagnosticServer());
-        _startHeartbeat();
-      }
+      _markEdgeConnected();
       return;
     }
     if (lower.contains('error:') ||
@@ -344,6 +359,81 @@ class _ConnectionPageState extends State<ConnectionPage> {
         setState(() => _status = ConnectionStatus.error);
       }
     }
+  }
+
+  void _updateConnectionModeFromEdgeLog(String line) {
+    final match = RegExp(
+      r'peer\s+([^\s]+)\s+changed\s+\[[^\]]+\]\s+->\s+\[([^:\]]+):\d+\]',
+      caseSensitive: false,
+    ).firstMatch(line);
+    if (match == null) return;
+    final peer = match.group(1);
+    final host = match.group(2);
+    if (peer == null || host == null) return;
+    final member = _memberForPeerEndpoint(peer, host);
+    if (member == null) return;
+    final mode = _isSupernodeEndpoint(host) ? '中继' : '直连';
+    _setMemberConnectionMode(member.deviceId, mode);
+  }
+
+  _OnlineMember? _memberForPeerEndpoint(String peer, String host) {
+    final peerIp = _normalizePeerAddress(peer);
+    final hostIp = _normalizePeerAddress(host);
+    for (final member in _members) {
+      if (member.deviceId == _deviceId) continue;
+      if (member.ip == peerIp || member.ip == hostIp) return member;
+    }
+    final others =
+        _members.where((member) => member.deviceId != _deviceId).toList();
+    if (others.length == 1) return others.single;
+    return null;
+  }
+
+  String _normalizePeerAddress(String value) {
+    final trimmed = value.trim();
+    final bracketedIpv6 =
+        RegExp(r'^\[([^\]]+)\](?::\d+)?$').firstMatch(trimmed);
+    if (bracketedIpv6 != null) return bracketedIpv6.group(1) ?? trimmed;
+    final ipv4WithPort =
+        RegExp(r'^(\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?$').firstMatch(trimmed);
+    if (ipv4WithPort != null) return ipv4WithPort.group(1) ?? trimmed;
+    return trimmed;
+  }
+
+  bool _isSupernodeEndpoint(String host) {
+    final supernodeHost = _normalizePeerAddress(_server.text.trim());
+    final endpointHost = _normalizePeerAddress(host);
+    return endpointHost == supernodeHost;
+  }
+
+  void _setMemberConnectionMode(String deviceId, String mode) {
+    if (mounted) {
+      setState(() => _applyMemberConnectionMode(deviceId, mode));
+    } else {
+      _applyMemberConnectionMode(deviceId, mode);
+    }
+  }
+
+  void _applyMemberConnectionMode(String deviceId, String mode) {
+    _connectionModes[deviceId] = mode;
+    final result = _checkResults[deviceId];
+    if (result != null && !result.testing) {
+      _checkResults[deviceId] = result.withMode(mode);
+    }
+  }
+
+  void _markEdgeConnected() {
+    if (!mounted ||
+        !_edgeRunning ||
+        _status == ConnectionStatus.connected ||
+        _status == ConnectionStatus.error) {
+      return;
+    }
+    _reconnectAttempts = 0;
+    setState(() => _status = ConnectionStatus.connected);
+    unawaited(_applyTapMetricPreference());
+    unawaited(_startDiagnosticServer());
+    _startHeartbeat();
   }
 
   Future<void> _handleAuthenticationError() async {
@@ -363,6 +453,34 @@ class _ConnectionPageState extends State<ConnectionPage> {
     const message = '连接被 n2n 服务拒绝，可立即重试连接。';
     _appendLog(message);
     _showError(message);
+  }
+
+  void _cancelReconnect() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _reconnectAttempts = 0;
+  }
+
+  void _scheduleReconnect(String reason) {
+    if (!mounted || _exitInProgress || _manualDisconnectRequested) return;
+    if (_reconnectTimer?.isActive == true || _connecting || _edgeRunning) {
+      return;
+    }
+    final seconds = _nextReconnectDelaySeconds();
+    _reconnectAttempts++;
+    final delay = Duration(seconds: seconds);
+    _appendLog(seconds == 0 ? '$reason，立即自动重连' : '$reason，$seconds 秒后自动重连');
+    _reconnectTimer = Timer(delay, () {
+      _reconnectTimer = null;
+      if (!mounted || _exitInProgress || _manualDisconnectRequested) return;
+      unawaited(_connect(isAutoReconnect: true));
+    });
+  }
+
+  int _nextReconnectDelaySeconds() {
+    if (_reconnectAttempts == 0) return 0;
+    if (_reconnectAttempts == 1) return 1;
+    return min((_reconnectAttempts - 1) * 3, _maxReconnectDelay.inSeconds);
   }
 
   void _clearLogs() {
@@ -489,6 +607,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
       'memberServiceKey': _memberServiceKey.text,
       'forceRelay': _forceRelay,
       'preferTapMetric': _preferTapMetric,
+      'verboseEdgeLogs': _verboseEdgeLogs,
     };
   }
 
@@ -582,7 +701,10 @@ class _ConnectionPageState extends State<ConnectionPage> {
       // Lease expiry on the server will clean up abnormal disconnects.
     }
     if (mounted) {
-      setState(() => _members = const []);
+      setState(() {
+        _members = const [];
+        _connectionModes.clear();
+      });
     }
   }
 
@@ -655,6 +777,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
         _memberServiceKey.text = value['memberServiceKey'] as String? ?? '';
         _forceRelay = value['forceRelay'] as bool? ?? true;
         _preferTapMetric = value['preferTapMetric'] as bool? ?? true;
+        _verboseEdgeLogs = value['verboseEdgeLogs'] as bool? ?? false;
       });
       _ensureGeneratedFields();
       await _saveSettings();
@@ -932,6 +1055,15 @@ class _ConnectionPageState extends State<ConnectionPage> {
         if (message.startsWith('gon2n-tcp-ping')) {
           socket.write('gon2n-tcp-pong');
           await socket.flush();
+        } else if (message.startsWith('gon2n-speed-download')) {
+          final chunk = List<int>.filled(16 * 1024, 0x47);
+          var remaining = _speedTestBytes;
+          while (remaining > 0) {
+            final size = remaining < chunk.length ? remaining : chunk.length;
+            socket.add(size == chunk.length ? chunk : chunk.sublist(0, size));
+            remaining -= size;
+          }
+          await socket.flush();
         }
       } catch (_) {
         // Ignore malformed or timed out diagnostics requests.
@@ -1049,6 +1181,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
     try {
       setState(() {
         for (final member in targets) {
+          _checkResultTimers.remove(member.deviceId)?.cancel();
           _checkResults[member.deviceId] = _NetworkCheckResult.testing();
         }
       });
@@ -1059,6 +1192,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
         setState(() {
           _checkResults[member.deviceId] = result;
         });
+        _expireNetworkCheckResult(member.deviceId);
       }));
     } finally {
       if (mounted) setState(() => _checkingNetwork = false);
@@ -1078,6 +1212,123 @@ class _ConnectionPageState extends State<ConnectionPage> {
       mode: mode,
       checkedAt: DateTime.now(),
     );
+  }
+
+  void _expireNetworkCheckResult(String deviceId) {
+    _checkResultTimers.remove(deviceId)?.cancel();
+    _checkResultTimers[deviceId] = Timer(_diagnosticResultTtl, () {
+      if (!mounted) return;
+      setState(() {
+        _checkResults.remove(deviceId);
+        _checkResultTimers.remove(deviceId);
+      });
+    });
+  }
+
+  void _expireSpeedTestResult(String deviceId) {
+    _speedTestResultTimers.remove(deviceId)?.cancel();
+    _speedTestResultTimers[deviceId] = Timer(_diagnosticResultTtl, () {
+      if (!mounted) return;
+      setState(() {
+        _speedTestResults.remove(deviceId);
+        _speedTestResultTimers.remove(deviceId);
+      });
+    });
+  }
+
+  Future<void> _runSpeedTest(_OnlineMember member) async {
+    if (!_connected ||
+        member.deviceId == _deviceId ||
+        _speedTestResults[member.deviceId]?.testing == true) {
+      return;
+    }
+    _speedTestResultTimers.remove(member.deviceId)?.cancel();
+    setState(() {
+      _speedTestResults[member.deviceId] = _SpeedTestResult.testing();
+    });
+    final result = await _testDownloadSpeed(member.ip);
+    if (!mounted) return;
+    setState(() {
+      _speedTestResults[member.deviceId] = result;
+    });
+    _expireSpeedTestResult(member.deviceId);
+  }
+
+  Future<_SpeedTestResult> _testDownloadSpeed(String ip) async {
+    Socket? socket;
+    final stopwatch = Stopwatch();
+    var received = 0;
+    try {
+      socket = await Socket.connect(
+        ip,
+        _diagnosticPort,
+        timeout: const Duration(seconds: 5),
+      );
+      socket.write('gon2n-speed-download');
+      await socket.flush();
+      stopwatch.start();
+      await for (final data in socket.timeout(const Duration(seconds: 20))) {
+        received += data.length;
+        if (received >= _speedTestBytes) break;
+      }
+      stopwatch.stop();
+      if (received <= 0 || stopwatch.elapsedMilliseconds <= 0) {
+        return _SpeedTestResult.failed();
+      }
+      final mbps = received * 8 / stopwatch.elapsedMilliseconds / 1000;
+      return _SpeedTestResult(
+        testing: false,
+        mbps: mbps,
+        checkedAt: DateTime.now(),
+      );
+    } catch (_) {
+      stopwatch.stop();
+      return _SpeedTestResult.failed();
+    } finally {
+      await socket?.close();
+    }
+  }
+
+  Future<void> _setVerboseEdgeLogs(bool value) async {
+    if (!_edgeRunning) {
+      setState(() => _verboseEdgeLogs = value);
+      await _saveSettings();
+      return;
+    }
+
+    final reconnect = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('重新连接后生效？'),
+            content: const Text('详细 n2n 日志需要重新启动 edge 后生效。是否现在重新连接？'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('稍后'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('现在重连'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+    if (!mounted) return;
+    setState(() => _verboseEdgeLogs = value);
+    await _saveSettings();
+    if (!reconnect) return;
+    await _disconnect();
+    if (!mounted) return;
+    await _connect();
+  }
+
+  Future<void> _setLogDetailMode(bool compact) async {
+    setState(() {
+      _compactLogs = compact;
+      _syncLogText();
+    });
+    await _setVerboseEdgeLogs(!compact);
   }
 
   Future<_TcpCheck> _checkTcp(String ip) async {
@@ -1170,11 +1421,17 @@ class _ConnectionPageState extends State<ConnectionPage> {
 
   String _connectionModeFor(_OnlineMember member) {
     if (_forceRelay) return '中继';
+    final cachedMode = _connectionModes[member.deviceId];
+    if (cachedMode != null) return cachedMode;
     return '未知';
   }
 
   Future<AppExitResponse> _confirmExit() async {
     if (!mounted) return AppExitResponse.exit;
+    if (_exitConfirmationOpen || _exitInProgress) {
+      return AppExitResponse.cancel;
+    }
+    _exitConfirmationOpen = true;
     final confirmed = await showDialog<bool>(
           context: context,
           builder: (context) => AlertDialog(
@@ -1193,12 +1450,21 @@ class _ConnectionPageState extends State<ConnectionPage> {
           ),
         ) ??
         false;
+    _exitConfirmationOpen = false;
     if (!confirmed) return AppExitResponse.cancel;
-    await _shutdownForExit();
-    return AppExitResponse.exit;
+    _exitInProgress = true;
+    try {
+      await _shutdownForExit();
+      return AppExitResponse.exit;
+    } catch (_) {
+      _exitInProgress = false;
+      rethrow;
+    }
   }
 
   Future<void> _shutdownForExit() async {
+    _manualDisconnectRequested = true;
+    _cancelReconnect();
     _heartbeatTimer?.cancel();
     _stopDiagnosticServer();
     await _restoreTapMetric();
@@ -1208,7 +1474,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
     _edge = null;
   }
 
-  Future<void> _connect() async {
+  Future<void> _connect({bool isAutoReconnect = false}) async {
     _ensureGeneratedFields();
     if (_memberServiceKey.text.trim().isEmpty) {
       setState(() => _advancedSettingsExpanded = true);
@@ -1216,6 +1482,10 @@ class _ConnectionPageState extends State<ConnectionPage> {
       return;
     }
     if (!_formKey.currentState!.validate()) return;
+    if (!isAutoReconnect) {
+      _manualDisconnectRequested = false;
+      _cancelReconnect();
+    }
     setState(() => _connecting = true);
     try {
       if (!mounted || _edgeRunning) return;
@@ -1234,12 +1504,16 @@ class _ConnectionPageState extends State<ConnectionPage> {
       final edgeAddress = _edgeAddress();
       _tapReadyLogged = false;
       _supernodeReadyLogged = false;
+      _connectionModes.clear();
+      _checkResults.clear();
+      _speedTestResults.clear();
       final args = <String>[
         '-a',
         'static:$edgeAddress',
         '-l',
         supernode,
-        '-v',
+        '-E',
+        if (_verboseEdgeLogs) '-v',
         if (_forceRelay) '-S1',
         if (_preferTapMetric) ...['-x', '1'],
       ];
@@ -1263,6 +1537,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
         _edge = process;
         _status = ConnectionStatus.connecting;
       });
+      _manualDisconnectRequested = false;
       process.stdout
           .transform(utf8.decoder)
           .transform(const LineSplitter())
@@ -1273,6 +1548,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
           .listen(_handleEdgeLog);
       unawaited(process.exitCode.then((code) {
         if (!mounted || _edge != process) return;
+        final shouldReconnect = !_manualDisconnectRequested && !_exitInProgress;
         _appendLog('edge 已退出，退出码 $code');
         _heartbeatTimer?.cancel();
         _stopDiagnosticServer();
@@ -1284,24 +1560,42 @@ class _ConnectionPageState extends State<ConnectionPage> {
             _status = ConnectionStatus.disconnected;
           }
         });
+        if (shouldReconnect) {
+          _scheduleReconnect('连接意外断开');
+        }
       }));
       _appendLog('edge 已启动，虚拟地址 ${_address.text.trim()}');
+      unawaited(Future<void>.delayed(
+        const Duration(milliseconds: 1500),
+        _markEdgeConnected,
+      ));
     } on ProcessException catch (error) {
       _appendLog('无法启动 edge：${error.message} (${error.executable})');
       if (mounted) setState(() => _status = ConnectionStatus.error);
-      _showError('无法启动 edge，请检查路径、TAP 驱动和管理员权限。');
+      if (!isAutoReconnect) {
+        _showError('无法启动 edge，请检查路径、TAP 驱动和管理员权限。');
+      }
     } catch (error) {
       _appendLog('连接失败：$error');
       if (mounted) setState(() => _status = ConnectionStatus.error);
-      _showError('连接失败：$error');
+      if (!isAutoReconnect) {
+        _showError('连接失败：$error');
+      }
     } finally {
-      if (mounted) setState(() => _connecting = false);
+      if (mounted) {
+        setState(() => _connecting = false);
+        if (isAutoReconnect && !_edgeRunning) {
+          _scheduleReconnect('自动重连失败');
+        }
+      }
     }
   }
 
   Future<void> _disconnect() async {
     final process = _edge;
     if (process == null) return;
+    _manualDisconnectRequested = true;
+    _cancelReconnect();
     _appendLog('正在断开连接');
     _heartbeatTimer?.cancel();
     _stopDiagnosticServer();
@@ -1540,6 +1834,8 @@ class _ConnectionPageState extends State<ConnectionPage> {
                       final isSelf = member.deviceId == _deviceId;
                       return ListTile(
                         dense: true,
+                        contentPadding:
+                            const EdgeInsets.symmetric(horizontal: 16),
                         leading: Icon(
                           isSelf
                               ? Icons.person_pin_circle_outlined
@@ -1552,7 +1848,8 @@ class _ConnectionPageState extends State<ConnectionPage> {
                         subtitle: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Flexible(
+                            SizedBox(
+                              width: 95,
                               child: Text(
                                 member.ip,
                                 overflow: TextOverflow.ellipsis,
@@ -1577,8 +1874,21 @@ class _ConnectionPageState extends State<ConnectionPage> {
                         ),
                         trailing: isSelf
                             ? null
-                            : _NetworkCheckResultView(
-                                result: _checkResults[member.deviceId],
+                            : Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  _NetworkCheckResultView(
+                                    result: _checkResults[member.deviceId],
+                                  ),
+                                  const SizedBox(width: 4),
+                                  _SpeedTestResultView(
+                                    result:
+                                        _speedTestResults[member.deviceId],
+                                    onPressed: _connected
+                                        ? () => _runSpeedTest(member)
+                                        : null,
+                                  ),
+                                ],
                               ),
                       );
                     },
@@ -1686,6 +1996,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
                           ),
                           const SizedBox(width: 12),
                           Expanded(
+                            flex: 2,
                             child: TextFormField(
                               controller: _port,
                               enabled: !_edgeRunning,
@@ -1765,8 +2076,8 @@ class _ConnectionPageState extends State<ConnectionPage> {
                           validator: _required,
                           obscureText: _obscureMemberServiceKey,
                           decoration: InputDecoration(
-                            labelText: '成员服务密钥（高级）',
-                            helperText: '必须和服务器 GON2N_MEMBER_SERVER_SECRET 一致',
+                            labelText: '成员服务密钥',
+                            helperText: '必须和服务器 GON2N_SHARED_SECRET 一致',
                             prefixIcon: const Icon(Icons.admin_panel_settings),
                             suffixIcon: Row(
                               mainAxisSize: MainAxisSize.min,
@@ -1924,7 +2235,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
                     final minMembersFraction =
                         height <= 0 ? 0.22 : (160 / height).clamp(0.18, 0.45);
                     final minLogsFraction =
-                        height <= 0 ? 0.35 : (240 / height).clamp(0.30, 0.60);
+                        height <= 0 ? 0.35 : (160 / height).clamp(0.18, 0.45);
                     final maxMembersFraction = 1 - minLogsFraction;
                     final membersFraction = _rightPanelFraction.clamp(
                       minMembersFraction,
@@ -1961,10 +2272,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
                                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                               ),
                               onSelectionChanged: (selection) {
-                                setState(() {
-                                  _compactLogs = selection.first;
-                                  _syncLogText();
-                                });
+                                unawaited(_setLogDetailMode(selection.first));
                               },
                             ),
                             const Spacer(),
@@ -2428,6 +2736,127 @@ class _OnlineMember {
   }
 }
 
+class _SpeedTestResultView extends StatelessWidget {
+  const _SpeedTestResultView({
+    required this.result,
+    required this.onPressed,
+  });
+
+  final _SpeedTestResult? result;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    if (result?.testing == true) {
+      return const SizedBox(
+        width: 32,
+        height: 32,
+        child: Center(
+          child: SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      );
+    }
+
+    if (result?.mbps != null) {
+      final speed = _formatSpeed(result!.mbps!);
+      return SizedBox(
+        width: 48,
+        child: TextButton(
+          onPressed: onPressed,
+          style: TextButton.styleFrom(
+            minimumSize: Size.zero,
+            padding: EdgeInsets.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            visualDensity: VisualDensity.compact,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Text(
+                speed.value,
+                overflow: TextOverflow.ellipsis,
+                style:
+                    textTheme.bodySmall?.copyWith(color: Colors.green.shade700),
+              ),
+              Text(
+                speed.unit,
+                overflow: TextOverflow.ellipsis,
+                style:
+                    textTheme.bodySmall?.copyWith(color: Colors.green.shade700),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (result?.failed == true) {
+      return TextButton(
+        onPressed: onPressed,
+        style: TextButton.styleFrom(
+          minimumSize: Size.zero,
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          visualDensity: VisualDensity.compact,
+        ),
+        child: Text(
+          '测速失败',
+          style: textTheme.bodySmall?.copyWith(color: Colors.red),
+        ),
+      );
+    }
+
+    return IconButton(
+      tooltip: '测速',
+      onPressed: onPressed,
+      icon: const Icon(Icons.speed_outlined),
+      iconSize: 18,
+      visualDensity: VisualDensity.compact,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+    );
+  }
+
+  static _FormattedSpeed _formatSpeed(double mbps) {
+    final mbPerSecond = mbps / 8;
+    if (mbPerSecond >= 1024 * 1024) {
+      return _FormattedSpeed(
+        (mbPerSecond / 1024 / 1024).toStringAsFixed(2),
+        'tb/s',
+      );
+    }
+    if (mbPerSecond >= 1024) {
+      return _FormattedSpeed(
+        (mbPerSecond / 1024).toStringAsFixed(2),
+        'gb/s',
+      );
+    }
+    if (mbPerSecond >= 1) {
+      return _FormattedSpeed(_compactNumber(mbPerSecond), 'mb/s');
+    }
+    return _FormattedSpeed(_compactNumber(mbPerSecond * 1024), 'kb/s');
+  }
+
+  static String _compactNumber(double value) {
+    if (value >= 100) return value.toStringAsFixed(0);
+    if (value >= 10) return value.toStringAsFixed(1);
+    return value.toStringAsFixed(2);
+  }
+}
+
+class _FormattedSpeed {
+  const _FormattedSpeed(this.value, this.unit);
+
+  final String value;
+  final String unit;
+}
+
 class _NetworkCheckResultView extends StatelessWidget {
   const _NetworkCheckResultView({required this.result});
 
@@ -2438,7 +2867,7 @@ class _NetworkCheckResultView extends StatelessWidget {
     final textTheme = Theme.of(context).textTheme;
     if (result == null) {
       return SizedBox(
-        width: 180,
+        width: 150,
         child: Text(
           '未检查',
           textAlign: TextAlign.right,
@@ -2448,7 +2877,7 @@ class _NetworkCheckResultView extends StatelessWidget {
     }
     if (result!.testing) {
       return SizedBox(
-        width: 180,
+        width: 150,
         child: Row(
           mainAxisAlignment: MainAxisAlignment.end,
           mainAxisSize: MainAxisSize.min,
@@ -2480,7 +2909,7 @@ class _NetworkCheckResultView extends StatelessWidget {
     final lossColor = _lossColor(lossPercent);
     final baseStyle = textTheme.bodySmall;
     return SizedBox(
-      width: 220,
+      width: 160,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         mainAxisSize: MainAxisSize.min,
@@ -2558,12 +2987,50 @@ class _NetworkCheckResult {
     return const _NetworkCheckResult(testing: true);
   }
 
+  _NetworkCheckResult withMode(String mode) {
+    return _NetworkCheckResult(
+      testing: testing,
+      latencyMs: latencyMs,
+      udpLossPercent: udpLossPercent,
+      tcpOk: tcpOk,
+      udpOk: udpOk,
+      mode: mode,
+      checkedAt: checkedAt,
+    );
+  }
+
   final bool testing;
   final int? latencyMs;
   final int? udpLossPercent;
   final bool tcpOk;
   final bool udpOk;
   final String mode;
+  final DateTime? checkedAt;
+}
+
+class _SpeedTestResult {
+  const _SpeedTestResult({
+    required this.testing,
+    this.mbps,
+    this.failed = false,
+    this.checkedAt,
+  });
+
+  factory _SpeedTestResult.testing() {
+    return const _SpeedTestResult(testing: true);
+  }
+
+  factory _SpeedTestResult.failed() {
+    return _SpeedTestResult(
+      testing: false,
+      failed: true,
+      checkedAt: DateTime.now(),
+    );
+  }
+
+  final bool testing;
+  final double? mbps;
+  final bool failed;
   final DateTime? checkedAt;
 }
 
