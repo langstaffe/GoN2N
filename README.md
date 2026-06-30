@@ -47,6 +47,12 @@ GoN2N patched n2n release artifact name: `n2nR-linux-amd64`.
 sudo install -m 755 dist/n2nR-linux-amd64 /usr/local/bin/n2nR
 ```
 
+一次构建 n2nR 的 Linux/Windows 多架构产物：
+
+```bash
+TARGET=all ./scripts/build-n2nr-linux-amd64.sh
+```
+
 创建 systemd 服务：
 
 ```bash
