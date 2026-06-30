@@ -55,15 +55,9 @@ diff --git a/src/sn_utils.c b/src/sn_utils.c
 +            int same_tap_ip = (scan->dev_addr.net_addr == reg->dev_addr.net_addr)
 +                           && (scan->dev_addr.net_bitlen == reg->dev_addr.net_bitlen)
 +                           && (reg->dev_addr.net_addr != 0);
-+            int same_remote_addr = sock_same_address(sender_sock, &(scan->sock));
-+            int stale_record = (now >= scan->last_seen)
-+                            && ((now - scan->last_seen) >= sss->gon2n_fast_reconnect_after);
-+
 +            if(sss->gon2n_fast_reconnect
 +               && (reg->auth.scheme == n2n_auth_simple_id)
-+               && (scan->auth.scheme == n2n_auth_simple_id)
-+               && same_tap_ip
-+               && (same_remote_addr || stale_record)) {
++               && same_tap_ip) {
 +                HASH_DEL(comm->edges, scan);
 +                memcpy(&(scan->mac_addr), reg->edgeMac, sizeof(n2n_mac_t));
 +                HASH_ADD_PEER(comm->edges, scan);
@@ -82,7 +76,7 @@ diff --git a/src/sn_utils.c b/src/sn_utils.c
 +                if(answer_auth)
 +                    memset(answer_auth, 0, sizeof(n2n_auth_t));
 +
-+                traceEvent(TRACE_INFO, "GoN2N fast reconnect replaced stale edge %s ==> %s",
++                traceEvent(TRACE_INFO, "GoN2N fast reconnect replaced same-IP edge %s ==> %s",
 +                           macaddr_str(mac_buf, reg->edgeMac),
 +                           sock_to_cstr(sockbuf, sender_sock));
 +                ret = update_edge_sock_change;
