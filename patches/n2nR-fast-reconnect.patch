@@ -171,3 +171,16 @@ diff --git a/src/supernode.c b/src/supernode.c
      calculate_shared_secrets(&sss_node);
  
      traceEvent(TRACE_DEBUG, "traceLevel is %d", getTraceLevel());
+diff --git a/win32/n2n_win32.h b/win32/n2n_win32.h
+--- a/win32/n2n_win32.h
++++ b/win32/n2n_win32.h
+@@ -28,6 +28,8 @@
+ #include <Iphlpapi.h>
+ #pragma comment(lib,"Iphlpapi.lib")
+ #endif
++#if defined(__MINGW32__)
++#include <iphlpapi.h>
++#endif
+ #include <netioapi.h>
+ #include <winioctl.h>
+ #include <iptypes.h>

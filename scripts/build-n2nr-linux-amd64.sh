@@ -12,6 +12,9 @@ N2N_URL="${N2N_URL:-https://github.com/ntop/n2n/archive/refs/tags/$N2N_VERSION.t
 PATCH_FILE="$ROOT_DIR/patches/n2nR-fast-reconnect.patch"
 N2N_DIR="$BUILD_ROOT/n2n-$N2N_VERSION-$TARGET"
 ALL_TARGETS="linux-amd64 linux-386 linux-arm64 linux-armv7 windows-amd64 windows-386"
+MAKE_TARGET_ARGS=""
+COMPAT_OPTIONS=""
+MAKE_BUILD_TARGET="supernode"
 
 if [ "$TARGET" = "all" ]; then
 	for target in $ALL_TARGETS; do
@@ -56,13 +59,19 @@ case "$TARGET" in
 		HOST="x86_64-w64-mingw32"
 		: "${CC:=x86_64-w64-mingw32-gcc}"
 		: "${OUTPUT_NAME:=n2nR-windows-x64.exe}"
-		SUPERNODE_BIN="supernode.exe"
+		SUPERNODE_BIN="src/supernode.exe"
+		MAKE_TARGET_ARGS="CONFIG_TARGET=mingw"
+		COMPAT_OPTIONS="-fpermissive"
+		MAKE_BUILD_TARGET="src/supernode"
 		;;
 	windows-386|windows-i386|windows-x86)
 		HOST="i686-w64-mingw32"
 		: "${CC:=i686-w64-mingw32-gcc}"
 		: "${OUTPUT_NAME:=n2nR-windows-x86.exe}"
-		SUPERNODE_BIN="supernode.exe"
+		SUPERNODE_BIN="src/supernode.exe"
+		MAKE_TARGET_ARGS="CONFIG_TARGET=mingw"
+		COMPAT_OPTIONS="-fpermissive"
+		MAKE_BUILD_TARGET="src/supernode"
 		;;
 	*)
 		echo "unsupported TARGET: $TARGET" >&2
@@ -107,6 +116,21 @@ else
 	exit 1
 fi
 
+# n2n 3.1.1's bundled getopt header uses names that newer MinGW CRTs expose
+# as macros. Its CRLF line endings make this compatibility fix unsuitable for
+# the main git patch, so apply it idempotently to Windows build trees here.
+if [ -n "$MAKE_TARGET_ARGS" ] && ! grep -q 'MinGW CRT exposes' "$N2N_DIR/win32/getopt.h"; then
+	sed -i '/#ifdef[[:space:]]*__cplusplus/i\
+/* MinGW CRT exposes __argc and __argv as macros. */\
+#ifdef __argc\
+#undef __argc\
+#endif\
+#ifdef __argv\
+#undef __argv\
+#endif\
+' "$N2N_DIR/win32/getopt.h"
+fi
+
 cd "$N2N_DIR"
 
 if [ ! -x ./configure ]; then
@@ -121,7 +145,7 @@ if [ ! -f config.mak ]; then
 	fi
 fi
 
-make supernode CFLAGS="${CFLAGS:-} -DGON2N_VERSION=\\\"$N2NR_VERSION\\\""
+make "$MAKE_BUILD_TARGET" $MAKE_TARGET_ARGS OPTIONS="${OPTIONS:-} $COMPAT_OPTIONS -DGON2N_VERSION=\\\"$N2NR_VERSION\\\""
 
 if [ ! -f "$SUPERNODE_BIN" ] && [ -f supernode ]; then
 	SUPERNODE_BIN="supernode"
