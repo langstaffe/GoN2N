@@ -98,9 +98,9 @@ if [ ! -d "$N2N_DIR" ]; then
 	rmdir "$tmp_dir"
 fi
 
-if git -C "$N2N_DIR" apply --recount --check "$PATCH_FILE"; then
-	git -C "$N2N_DIR" apply --recount "$PATCH_FILE"
-elif git -C "$N2N_DIR" apply --recount --reverse --check "$PATCH_FILE"; then
+if GIT_CEILING_DIRECTORIES="$ROOT_DIR" git -C "$N2N_DIR" apply --recount --check "$PATCH_FILE"; then
+	GIT_CEILING_DIRECTORIES="$ROOT_DIR" git -C "$N2N_DIR" apply --recount "$PATCH_FILE"
+elif GIT_CEILING_DIRECTORIES="$ROOT_DIR" git -C "$N2N_DIR" apply --recount --reverse --check "$PATCH_FILE"; then
 	echo "n2nR patch is already applied"
 else
 	echo "failed to apply n2nR patch" >&2
