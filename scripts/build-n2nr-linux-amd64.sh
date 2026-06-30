@@ -41,8 +41,8 @@ esac
 
 mkdir -p "$BUILD_ROOT" "$OUTPUT_DIR"
 
-if ! command -v patch >/dev/null 2>&1; then
-	echo "patch is required to apply the n2nR patch" >&2
+if ! command -v git >/dev/null 2>&1; then
+	echo "git is required to apply the n2nR patch" >&2
 	exit 1
 fi
 
@@ -66,9 +66,9 @@ if [ ! -d "$N2N_DIR" ]; then
 	rmdir "$tmp_dir"
 fi
 
-if patch --dry-run --batch --forward --silent -d "$N2N_DIR" -p1 < "$PATCH_FILE" >/dev/null 2>&1; then
-	patch --batch --forward -d "$N2N_DIR" -p1 < "$PATCH_FILE"
-elif patch --dry-run --batch --reverse --silent -d "$N2N_DIR" -p1 < "$PATCH_FILE" >/dev/null 2>&1; then
+if git -C "$N2N_DIR" apply --recount --check "$PATCH_FILE"; then
+	git -C "$N2N_DIR" apply --recount "$PATCH_FILE"
+elif git -C "$N2N_DIR" apply --recount --reverse --check "$PATCH_FILE"; then
 	echo "n2nR patch is already applied"
 else
 	echo "failed to apply n2nR patch" >&2
