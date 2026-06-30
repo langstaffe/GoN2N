@@ -154,6 +154,14 @@ diff --git a/src/supernode.c b/src/supernode.c
  
      while((c = getopt_long(argc, argv,
                             "p:l:t:a:c:F:vhMV:"
+@@ -382,7 +403,7 @@ static int loadFromCLI (int argc, char * const argv[], n2n_sn_t *sss) {
+                             ,
+ 			    long_options, NULL)) != '?') {
+-        if(c == 255) {
++        if(c == -1) {
+             break;
+         }
+         help(setOption(c, optarg, sss));
 @@ -598,6 +619,10 @@ int main (int argc, char * const argv[]) {
          traceEvent(TRACE_WARNING, "disabled MAC and IP address spoofing protection; FOR TESTING ONLY, usage of user-password authentication (-I, -J, -P) recommended instead!");
      }
