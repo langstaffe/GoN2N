@@ -63,7 +63,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/n2nR -p 51873 --gon2n-fast-reconnect
+ExecStart=/usr/local/bin/n2nR -p 51873 --gon2n-fast-reconnect -V v0.1.0
 Restart=always
 RestartSec=3
 

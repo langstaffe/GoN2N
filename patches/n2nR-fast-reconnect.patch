@@ -13,12 +13,16 @@ diff --git a/include/n2n_typedefs.h b/include/n2n_typedefs.h
 diff --git a/src/sn_utils.c b/src/sn_utils.c
 --- a/src/sn_utils.c
 +++ b/src/sn_utils.c
-@@ -750,6 +750,7 @@ int sn_init_defaults (n2n_sn_t *sss) {
+@@ -750,6 +750,11 @@ int sn_init_defaults (n2n_sn_t *sss) {
      sss->lport = N2N_SN_LPORT_DEFAULT;
      sss->mport = N2N_SN_MGMT_PORT;
      sss->sock = -1;
      sss->mgmt_sock = -1;
 +    sss->gon2n_fast_reconnect_after = 3;
++#ifdef GON2N_VERSION
++    strncpy(sss->version, GON2N_VERSION, sizeof(n2n_version_t));
++    sss->version[sizeof(n2n_version_t) - 1] = '\0';
++#endif
      sss->min_auto_ip_net.net_addr = inet_addr(N2N_SN_MIN_AUTO_IP_NET_DEFAULT);
      sss->min_auto_ip_net.net_addr = ntohl(sss->min_auto_ip_net.net_addr);
      sss->min_auto_ip_net.net_bitlen = N2N_SN_AUTO_IP_NET_BIT_DEFAULT;

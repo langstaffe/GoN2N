@@ -4,6 +4,7 @@ set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 N2N_VERSION="${N2N_VERSION:-3.1.1}"
+N2NR_VERSION="${N2NR_VERSION:-v0.1.0}"
 TARGET="${TARGET:-linux-amd64}"
 BUILD_ROOT="${BUILD_ROOT:-$ROOT_DIR/dist/n2nR-build}"
 OUTPUT_DIR="${OUTPUT:-$ROOT_DIR/dist}"
@@ -89,7 +90,7 @@ if [ ! -f config.mak ]; then
 	fi
 fi
 
-make supernode
+make supernode CFLAGS="${CFLAGS:-} -DGON2N_VERSION=\\\"$N2NR_VERSION\\\""
 
 cp supernode "$OUTPUT_DIR/$OUTPUT_NAME"
 chmod 755 "$OUTPUT_DIR/$OUTPUT_NAME"

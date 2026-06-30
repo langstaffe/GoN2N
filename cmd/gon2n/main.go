@@ -19,7 +19,7 @@ import (
 	"github.com/kanami/gon2n/internal/members"
 )
 
-const version = "0.1.0"
+const version = "v0.1.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {

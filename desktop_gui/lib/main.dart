@@ -16,6 +16,8 @@ enum ConnectionStatus {
 
 // Keep app UI text on this Windows UI font so Chinese glyph weight stays stable.
 const _appFontFamily = 'Microsoft YaHei UI';
+const _fallbackAppVersion = 'v0.1.0';
+const _projectHomeUrl = 'https://github.com/langstaffe/GoN2N';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -1618,6 +1620,89 @@ class _ConnectionPageState extends State<ConnectionPage> {
     );
   }
 
+  void _showAboutDialog() {
+    final versionFuture = _readAppVersion();
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('关于 GoN2N'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            FutureBuilder<String>(
+              future: versionFuture,
+              initialData: _fallbackAppVersion,
+              builder: (context, snapshot) {
+                return Text('版本号：${snapshot.data ?? _fallbackAppVersion}');
+              },
+            ),
+            const SizedBox(height: 12),
+            TextButton.icon(
+              onPressed: _openProjectHome,
+              icon: const Icon(Icons.open_in_new),
+              label: const Text('langstaffe/GoN2N'),
+              style: TextButton.styleFrom(
+                padding: EdgeInsets.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<String> _readAppVersion() async {
+    if (!Platform.isWindows) return _fallbackAppVersion;
+    try {
+      final result = await Process.run(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          r"(Get-Item -LiteralPath $args[0]).VersionInfo.ProductVersion",
+          Platform.resolvedExecutable,
+        ],
+      ).timeout(const Duration(seconds: 2));
+      final version = result.stdout.toString().trim();
+      if (result.exitCode == 0 && version.isNotEmpty) {
+        final versionName = version.split('+').first;
+        return versionName.startsWith('v') ? versionName : 'v$versionName';
+      }
+    } catch (_) {
+      // Fall back to the release version used before build metadata is readable.
+    }
+    return _fallbackAppVersion;
+  }
+
+  Future<void> _openProjectHome() async {
+    try {
+      if (Platform.isWindows) {
+        await Process.start(
+          'rundll32.exe',
+          ['url.dll,FileProtocolHandler', _projectHomeUrl],
+          runInShell: false,
+        );
+      } else if (Platform.isMacOS) {
+        await Process.start('open', [_projectHomeUrl], runInShell: false);
+      } else {
+        await Process.start('xdg-open', [_projectHomeUrl], runInShell: false);
+      }
+    } catch (error) {
+      await Clipboard.setData(const ClipboardData(text: _projectHomeUrl));
+      _showError('无法打开项目主页，链接已复制到剪切板');
+    }
+  }
+
   String _defaultEdgePath() {
     return _bundledEdgePath() ?? _fallbackEdgeName();
   }
@@ -1918,6 +2003,12 @@ class _ConnectionPageState extends State<ConnectionPage> {
         title: const Text('GoN2N'),
         backgroundColor: colorScheme.surface,
         actions: [
+          IconButton(
+            tooltip: '关于',
+            onPressed: _showAboutDialog,
+            icon: const Icon(Icons.error_outline),
+          ),
+          const SizedBox(width: 4),
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [

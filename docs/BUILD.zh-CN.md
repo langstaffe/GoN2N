@@ -24,7 +24,12 @@ make windows-release
 结果位于 `dist/`：
 
 ```text
-gon2n-windows-x64.exe  Windows 64 位
+gon2n-member-server-windows-x64.exe  Windows 64 位
+gon2n-member-server-windows-x86.exe  Windows 32 位
+gon2n-member-server-linux-amd64      Linux 64 位
+gon2n-member-server-linux-386        Linux 32 位 x86
+gon2n-member-server-linux-arm64      Linux ARM64
+gon2n-member-server-linux-armv7      Linux ARM 32 位
 ```
 
 ## 编译 Windows GUI
