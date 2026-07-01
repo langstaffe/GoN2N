@@ -218,7 +218,7 @@ curl.exe http://服务器公网IP:51874/healthz
 
 ### 2.2 客户端安装 GoN2N
 
-在 Windows 客户端下载 `GoN2N-v0.1.0-windows-x64.zip`，解压后运行：
+在 Windows 客户端下载 [`GoN2N-v0.1.0-windows-x64.zip`](https://github.com/langstaffe/GoN2N/releases/download/v0.1.0/GoN2N-v0.1.0-windows-x64.zip)，解压后运行：
 
 ```text
 GoN2N.exe
