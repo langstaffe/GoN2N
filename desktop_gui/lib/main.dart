@@ -715,7 +715,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
     Map<String, Object?> payload,
   ) async {
     final client = HttpClient();
-    const timeout = Duration(seconds: 10);
+    const timeout = Duration(seconds: 15);
     client.connectionTimeout = timeout;
     try {
       final request = await client.postUrl(uri).timeout(
