@@ -67,11 +67,20 @@ GoN2N-v0.1.0-windows-x64.zip
 curl -fsSL https://raw.githubusercontent.com/langstaffe/GoN2N/main/scripts/install-server.sh | sudo sh
 ```
 
+如果系统提示没有 `curl`，Debian / Ubuntu 可以先执行：
+
+```bash
+sudo apt update
+sudo apt install -y curl
+```
+
 脚本会自动创建安装目录、下载最新 release 中适合当前 Linux 架构的 `n2nR-server` 和
 `gon2n-member-server`、生成复杂的成员服务密钥、创建 systemd 服务并启动。
 
 安装完成后，脚本会输出一串 `gon2n:...` 连接信息。复制这串内容到 GoN2N 客户端，点击
 “导入”即可自动填入服务器地址、端口、社区名、成员服务地址、共享密钥和成员服务密钥。
+
+![GoN2N 服务端自动安装完成示例](docs/images/gon2n-auto-install.png)
 
 如果服务器无法自动识别公网 IP，可以手动指定：
 
