@@ -121,7 +121,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 # 在这里设置成员服务密钥，待会要填到 GoN2N 客户端里，不要用下面的123456，推荐设置复杂一些
-Environment=GON2N_SHARED_SECRET=123456
+Environment="GON2N_SHARED_SECRET=123456"
 ExecStart=/opt/gon2n/member-server/gon2n-member-server member-server --listen :51874 --lease 30s
 Restart=always
 RestartSec=3
